@@ -2,14 +2,64 @@ export const AA_SOURCE = "https://artificialanalysis.ai/leaderboards/models";
 export const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 export const BENCHMARK = "Artificial Analysis Intelligence Index";
 export const OUTPUT_SCHEMA_VERSION = "1.0.0";
+export const BENCHMARK_CATALOG = [
+  {
+    id: "artificial-analysis",
+    name: "Artificial Analysis Intelligence Index",
+    category: "general-intelligence",
+    evaluationStyle: "composite-objective",
+    url: AA_SOURCE,
+    integration: "available",
+  },
+  {
+    id: "lmarena",
+    name: "LMArena Leaderboard",
+    category: "human-preference",
+    evaluationStyle: "blind-pairwise-voting",
+    url: "https://lmarena.ai/leaderboard",
+    integration: "planned",
+  },
+  {
+    id: "livebench",
+    name: "LiveBench",
+    category: "general-capabilities",
+    evaluationStyle: "frequently-updated-objective",
+    url: "https://github.com/LiveBench/LiveBench",
+    integration: "planned",
+  },
+  {
+    id: "helm",
+    name: "Stanford HELM",
+    category: "holistic-evaluation",
+    evaluationStyle: "multi-scenario-multi-metric",
+    url: "https://crfm.stanford.edu/helm",
+    integration: "planned",
+  },
+  {
+    id: "swe-bench-verified",
+    name: "SWE-bench Verified",
+    category: "software-engineering",
+    evaluationStyle: "real-repository-issue-resolution",
+    url: "https://www.swebench.com",
+    integration: "planned",
+  },
+  {
+    id: "arc-agi-2",
+    name: "ARC-AGI-2",
+    category: "abstract-reasoning",
+    evaluationStyle: "novel-task-generalization",
+    url: "https://arcprize.org/arc-agi/2/",
+    integration: "planned",
+  },
+];
 
-export function outputEnvelope(command, data, meta = {}) {
+export function outputEnvelope(command, data, meta = {}, sources = [AA_SOURCE]) {
   return {
     schemaVersion: OUTPUT_SCHEMA_VERSION,
     ok: true,
     command,
     generatedAt: new Date().toISOString(),
-    sources: [AA_SOURCE],
+    sources,
     meta,
     data,
   };
@@ -49,33 +99,65 @@ function modelUrl(row) {
 }
 
 export function parseLeaderboardHtml(html) {
-  const table = html.match(/<table\b[\s\S]*?<\/table>/i)?.[0];
+  const tables = html.match(/<table\b[\s\S]*?<\/table>/gi) ?? [];
+  const table = tables.find((candidate) => {
+    const value = htmlText(candidate).toLowerCase();
+    return (
+      value.includes("model") &&
+      value.includes("creator") &&
+      value.includes("artificial analysis intelligence index")
+    );
+  });
   if (!table) {
     throw new Error(
       "Leaderboard table missing. Artificial Analysis markup changed or response was gated.",
     );
   }
 
+  const rows = table.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? [];
+  let columns;
+  for (const row of rows) {
+    const headerCells = [...row.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/gi)].map(
+      (match) => htmlText(match[1]),
+    );
+    const find = (pattern) => headerCells.findIndex((value) => pattern.test(value));
+    const candidate = {
+      model: find(/^Model$/i),
+      contextWindow: find(/Context Window/i),
+      creator: find(/^Creator$/i),
+      intelligence: find(/Artificial Analysis Intelligence Index/i),
+      price: find(/USD\/1M Tokens/i),
+      speed: find(/Tokens\/s/i),
+      latency: find(/First Chunk/i),
+      total: find(/Total Response/i),
+    };
+    if (Object.values(candidate).every((index) => index >= 0)) {
+      columns = candidate;
+      break;
+    }
+  }
+  if (!columns) throw new Error("Leaderboard columns changed. Expected benchmark headers not found.");
+
   const parsed = [];
-  for (const row of table.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+  for (const row of rows) {
     const cells = [...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(
       (match) => match[1],
     );
-    if (cells.length < 8) continue;
+    if (!/<td\b/i.test(row) || cells.length <= Math.max(...Object.values(columns))) continue;
     const values = cells.map(htmlText);
-    const aaIntelligenceIndex = number(values[3]);
-    if (!values[0] || aaIntelligenceIndex === null) continue;
+    const aaIntelligenceIndex = number(values[columns.intelligence]);
+    if (!values[columns.model] || aaIntelligenceIndex === null) continue;
     parsed.push({
-      model: values[0],
-      creator: values[2],
+      model: values[columns.model],
+      creator: values[columns.creator],
       category: "language-model",
       benchmark: BENCHMARK,
       aaIntelligenceIndex,
-      contextWindow: values[1],
-      blendedUsdPerMillionTokens: number(values[4]),
-      medianTokensPerSecond: number(values[5]),
-      latencyFirstChunkSeconds: number(values[6]),
-      totalResponseSeconds: number(values[7]),
+      contextWindow: values[columns.contextWindow],
+      blendedUsdPerMillionTokens: number(values[columns.price]),
+      medianTokensPerSecond: number(values[columns.speed]),
+      latencyFirstChunkSeconds: number(values[columns.latency]),
+      totalResponseSeconds: number(values[columns.total]),
       sourceUrl: modelUrl(row),
     });
   }
@@ -84,14 +166,45 @@ export function parseLeaderboardHtml(html) {
   return parsed.map((model, index) => ({ ...model, aaIntelligenceRank: index + 1 }));
 }
 
-export async function fetchLeaderboard({ fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(AA_SOURCE, {
-    headers: { accept: "text/html,application/xhtml+xml" },
-  });
-  if (!response.ok) {
-    throw new Error(`Artificial Analysis request failed: ${response.status} ${response.statusText}`);
+export async function fetchLeaderboard({
+  fetchImpl = fetch,
+  minimumRows = 50,
+  retries = 2,
+  timeoutMs = 15_000,
+} = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetchImpl(AA_SOURCE, {
+        headers: {
+          accept: "text/html,application/xhtml+xml",
+          "user-agent": "aa-model-index/0.1 (+https://github.com/florian583/artificialanalysis-cli)",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        if (!retryable) {
+          throw new Error(
+            `Artificial Analysis request failed: ${response.status} ${response.statusText}`,
+          );
+        }
+        throw new Error(`Artificial Analysis temporary failure: HTTP ${response.status}`);
+      }
+      const rows = parseLeaderboardHtml(await response.text());
+      if (rows.length < minimumRows) {
+        throw new Error(
+          `Leaderboard integrity check failed: ${rows.length} rows; expected at least ${minimumRows}`,
+        );
+      }
+      return rows;
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
   }
-  return parseLeaderboardHtml(await response.text());
+  throw lastError;
 }
 
 const CREATOR_ALIASES = new Map([

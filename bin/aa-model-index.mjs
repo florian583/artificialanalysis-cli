@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import {
   AA_SOURCE,
   BENCHMARK,
+  BENCHMARK_CATALOG,
   enrichAiCliResult,
   enrichGatewayModel,
   fetchGatewayModel,
@@ -19,6 +20,7 @@ function usage(exitCode = 0) {
   aa-model-index list [--query <text>] [--creator <name>] [--limit <n>] [--format auto|table|json|jsonl|csv]
   aa-model-index model <name|slug|gateway-id> [--gateway] [--format table|json]
   aa-model-index enrich [--input <file|->] [--only-matched] [--format json|jsonl]
+  aa-model-index benchmarks [--format auto|table|json|jsonl]
   aa-model-index schema
 
 Common: --llm  --compact  --har <path>
@@ -87,6 +89,26 @@ function listTable(rows) {
   const widths = header.map((label, index) => Math.max(label.length, ...body.map((row) => row[index].length)));
   const line = (values) => values.map((value, index) => value.padEnd(widths[index])).join("  ");
   return [line(header), line(widths.map((width) => "-".repeat(width))), ...body.map(line)].join("\n");
+}
+
+function benchmarksTable(rows) {
+  const header = ["ID", "Category", "Evaluation", "Integration"];
+  const body = rows.map((row) => [
+    row.id,
+    row.category,
+    row.evaluationStyle,
+    row.integration,
+  ]);
+  const widths = header.map((label, index) =>
+    Math.max(label.length, ...body.map((row) => row[index].length)),
+  );
+  const line = (values) =>
+    values.map((value, index) => value.padEnd(widths[index])).join("  ");
+  return [
+    line(header),
+    line(widths.map((width) => "-".repeat(width))),
+    ...body.map(line),
+  ].join("\n");
 }
 
 function modelCard(result) {
@@ -206,6 +228,30 @@ async function main() {
   if (command === "schema") {
     const schemaUrl = new URL("../schema/llm-output.schema.json", import.meta.url);
     console.log(await readFile(schemaUrl, "utf8"));
+    return;
+  }
+  if (command === "benchmarks") {
+    const format = defaultFormat();
+    const sources = BENCHMARK_CATALOG.map((benchmark) => benchmark.url);
+    let benchmarkOutput;
+    if (format === "json") {
+      benchmarkOutput = json(
+        outputEnvelope(
+          "benchmarks",
+          { count: BENCHMARK_CATALOG.length, benchmarks: BENCHMARK_CATALOG },
+          { integrated: BENCHMARK_CATALOG.filter((item) => item.integration === "available").length },
+          sources,
+        ),
+      );
+    } else if (format === "jsonl") {
+      benchmarkOutput = BENCHMARK_CATALOG.map((benchmark, index) =>
+        JSON.stringify(
+          outputEnvelope("benchmarks", benchmark, { recordIndex: index }, [benchmark.url]),
+        ),
+      ).join("\n");
+    } else if (format === "table") benchmarkOutput = benchmarksTable(BENCHMARK_CATALOG);
+    else throw new Error("benchmarks --format must be auto, table, json, or jsonl");
+    console.log(benchmarkOutput);
     return;
   }
   const recorder = createRecorder();
