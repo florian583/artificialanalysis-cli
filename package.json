@@ -1,0 +1,44 @@
+{
+  "name": "aa-model-index",
+  "version": "0.1.0",
+  "description": "Unofficial CLI for Artificial Analysis model scores and Vercel AI CLI enrichment",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "aa-model-index": "./bin/aa-model-index.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "schema",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check bin/aa-model-index.mjs && node --check src/index.mjs",
+    "prepack": "npm run check && npm test"
+  },
+  "keywords": [
+    "artificial-analysis",
+    "vercel-ai",
+    "ai-cli",
+    "llm",
+    "benchmark",
+    "model-comparison"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/florian583/artificialanalysis-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/florian583/artificialanalysis-cli/issues"
+  },
+  "homepage": "https://github.com/florian583/artificialanalysis-cli#readme"
+}
